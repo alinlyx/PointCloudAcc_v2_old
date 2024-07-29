@@ -1,0 +1,210 @@
+############################
+## Static Timing Analysis ##
+############################
+source ./config_temp.tcl
+set reportDir ${SYNTH_PROJDIR}
+
+set_global report_timing_format {instance cell pin arc fanout load slew delay arrival incr_delay edge }
+set_table_style -frame
+set_table_style -name report_timing -max_width {500}
+set_design_mode -process 65
+
+########################
+## Read Library Files ##
+########################
+
+source $TECH
+
+#############################################################################################
+##                                  Define worst-case library sets                         ## 
+#############################################################################################
+# HV Lib
+read_lib $slow_HV_lib
+read_lib $slow_LV_lib
+
+#############################################################################################
+##                                  Define typical-case library sets                       ## 
+#############################################################################################
+read_lib $typical_HV_lib
+read_lib $typical_LV_lib
+
+#############################################################################################
+##                                  Define best-case library sets                          ## 
+#############################################################################################
+read_lib $fast_HV_lib
+read_lib $fast_LV_lib
+
+read_verilog $NETLIST
+set_top_module $DESIGN_NAME
+read_power_domain -cpf ../synth/$DESIGN_NAME.cpf
+
+#############################################################################################
+##                                  Define Delay Corners                                   ## 
+#############################################################################################
+create_rc_corner \
+	-name rc_corner_cworst\
+   	-preRoute_res 1\
+   	-postRoute_res 1\
+   	-preRoute_cap 1\
+   	-postRoute_cap 1\
+   	-postRoute_xcap 1\
+   	-preRoute_clkres 0\
+   	-preRoute_clkcap 0\
+   	-T 125\
+   	-qx_tech_file $rc_corner_cworst_QRC
+
+create_rc_corner \
+	-name rc_corner_cbest\
+   	-preRoute_res 1\
+   	-postRoute_res 1\
+   	-preRoute_cap 1\
+   	-postRoute_cap 1\
+   	-postRoute_xcap 1\
+   	-preRoute_clkres 0\
+   	-preRoute_clkcap 0\
+   	-T 0\
+   	-qx_tech_file $rc_corner_cbest_QRC
+
+#################################
+##            Setup            ##
+#################################
+# LV
+create_library_set \
+	-name 	slow_0p45_library_set\
+   	-timing $slow_LV_lib
+
+create_delay_corner \
+	-name 		    DC_rcworst_setup\
+   	-library_set 	slow_0p45_library_set\
+   	-rc_corner 	    rc_corner_cworst
+    # -opcond_library u055lsclpmvbdr\
+    # -opcond 	    PVT_0P45V_125C\
+update_delay_corner \
+	-name 		    DC_rcworst_setup\
+   	-library_set 	slow_0p45_library_set\
+    -power_domain   PD_CORE
+
+# HV
+create_library_set \
+	-name 	slow_1p08_library_set\
+   	-timing $slow_HV_lib
+update_delay_corner \
+	-name 		    DC_rcworst_setup\
+   	-library_set 	slow_1p08_library_set\
+    -power_domain   PD_SRAM
+
+update_delay_corner \
+	-name 		    DC_rcworst_setup\
+   	-library_set 	slow_1p08_library_set\
+    -power_domain   PD_OBUF
+ 
+#################################
+##             Hold            ##
+#################################
+# LV
+create_library_set \
+	-name 	fast_0p55_library_set\
+   	-timing $fast_LV_lib
+
+create_delay_corner \
+	-name 		    DC_rcbest_hold\
+   	-library_set 	fast_0p55_library_set\
+   	-rc_corner 	    rc_corner_cbest
+    # -opcond_library u055lsclpmvbdr\
+    # -opcond 	    PVT_0P45V_125C\
+update_delay_corner \
+	-name 		    DC_rcbest_hold\
+   	-library_set 	fast_0p55_library_set\
+    -power_domain   PD_CORE
+
+# HV
+ create_library_set \
+	-name 	fast_1p32_library_set\
+   	-timing $fast_HV_lib
+update_delay_corner \
+	-name 		    DC_rcbest_hold\
+   	-library_set 	fast_1p32_library_set\
+    -power_domain   PD_SRAM
+
+update_delay_corner \
+	-name 		    DC_rcbest_hold\
+   	-library_set 	fast_1p32_library_set\
+    -power_domain   PD_OBUF
+
+#############################################################################################
+##                                  Define Analysis View                                   ## 
+#############################################################################################
+
+update_analysis_view -name AV_slowHV_slowHV_rcworst_setup -delay_corner DC_rcworst_setup
+update_analysis_view -name AV_fastHV_fastHV_rcbest_hold   -delay_corner DC_rcbest_hold
+
+set_analysis_view -setup {AV_slowHV_slowHV_rcworst_setup} -hold {AV_fastHV_fastHV_rcbest_hold}
+set_default_view  -setup {AV_slowHV_slowHV_rcworst_setup} -hold {AV_fastHV_fastHV_rcbest_hold}
+
+#############################################################################################
+##                                  Settings                                               ## 
+#############################################################################################
+
+set_interactive_constraint_modes [ all_constraint_modes -active ]
+
+set_analysis_mode -cppr both -analysisType onChipVariation -checkType setup
+set_delay_cal_mode -engine signalStorm -SIAware false
+
+#set_delay_cal_mode -engine aae -SIAware true
+#setSIMode -reset
+#setSIMode -analysisType aae
+#setSIMode -detailedReports false
+#setSIMode -separate_delta_delay_on_data true
+#setSIMode -delta_delay_annotation_mode lumpedOnNet
+#setSIMode -num_si_iteration 3
+#setSIMode -enable_glitch_report true
+
+#############################################################################################
+##                                  Read SPEF Extracted with QRC                           ## 
+#############################################################################################
+
+read_spef -rc_corner rc_corner_cbest  $SPEF_FAST
+read_spef -rc_corner rc_corner_cworst $SPEF_SLOW
+report_annotated_parasitics  -list_not_annotated > ${reportDir}/ReportAnnotatedParasitics.rpt
+
+set_propagated_clock [all_clocks]
+
+# Set OCV parameters
+set_timing_derate -early 0.95 -late 1.0 -delay_corner [ get_analysis_view AV_slowHV_slowHV_rcworst_setup -delay_corner ]
+
+#############################################################################################
+##                                  Write Reports                                          ## 
+#############################################################################################
+
+check_design -all -noHtml -outfile ${reportDir}/checkDesign.rpt
+check_library  -outfile ${reportDir}/checkLibrary.rpt
+check_timing -verbose > ${reportDir}/checkTiming.rpt
+
+
+group_path -name reg2reg -from [ all_registers ] -to [ all_registers ]
+group_path -name in2reg  -from [ all_inputs    ] -to [ all_registers ]
+group_path -name reg2out -from [ all_registers ] -to [ all_outputs   ]
+group_path -name in2out  -from [ all_inputs    ] -to [ all_outputs   ]
+
+set pathGroups [ list default ]
+foreach_in_collection group [ get_path_groups -quiet ] {
+    lappend pathGroups [ get_property $group name ]
+}
+
+
+set_analysis_mode -cppr both -analysisType onChipVariation -checkType setup
+report_timing -late            -net -path_type full_clock -nworst 5 -max_points 1200 > ${reportDir}/report_timing_setup_1200.rpt
+report_timing -check_type hold -net -path_type full_clock -nworst 5 -max_points 1200 > ${reportDir}/report_timing_hold_1200.rpt
+
+report_critical_instance -max_slack 0.0 -cost_type worst_slack -max_insts 600 > ${reportDir}/criticalInstance.rpt
+
+set_table_style         -no_frame_fix_width -nosplit
+report_constraint       -all_violators                                      > ${reportDir}/allConstraintViolations.rpt
+report_constraint       -all_violators -drv_violation_type max_transition   > ${reportDir}/maxTran.rpt
+report_constraint       -all_violators -drv_violation_type max_capacitance  > ${reportDir}/maxCap.rpt
+report_constraint       -all_violators -drv_violation_type max_fanout       > ${reportDir}/maxFanout.rpt
+report_min_pulse_width  -violation_only                                     > ${reportDir}/minPulseWidth.rpt
+report_analysis_coverage                                                    > ${reportDir}/analysisCoverage.rpt
+
+# exit
+
